@@ -1,0 +1,67 @@
+name: Mirror to GitLab
+
+# Mirrors the pushed branch to the GitLab counterpart at
+# gitlab.com/crapsolutions/<repo> (GitHub -> GitLab). Fast-forward only:
+# never force-pushes, so a divergence fails the run loudly for a human to
+# resolve -- the GitLab branch is never clobbered.
+#
+# Requires repo secret: GITLAB_TOKEN (a GitLab PAT with write_repository).
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  delete:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize per branch so near-simultaneous pushes don't race.
+  group: mirror-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Mirror branch to GitLab (fast-forward only)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          GH_REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+
+          # GitHub repo name -> GitLab project name (.py repos are -py there)
+          case "$GH_REPO" in
+            analyzecrypt.py) gl="analyzecrypt-py" ;;
+            pagegen.py)      gl="pagegen-py" ;;
+            progtest.py)     gl="progtest-py" ;;
+            volley.py)       gl="volley-py" ;;
+            *)               gl="$GH_REPO" ;;
+          esac
+
+          if [ "$EVENT" = "delete" ]; then
+            echo "Delete event: branch deletion not mirrored (GitLab branches preserved)"
+            exit 0
+          fi
+
+          echo "Mirroring '$BRANCH' of $GH_REPO -> GitLab:crapsolutions/$gl"
+
+          # Plain push = fast-forward only. git rejects it (non-fast-forward)
+          # if GitLab has commits GitHub doesn't, so the run fails loudly
+          # instead of overwriting the GitLab branch.
+          git push --quiet --no-tags \
+            "https://oauth2:${GITLAB_TOKEN}@gitlab.com/crapsolutions/${gl}.git" \
+            "HEAD:refs/heads/$BRANCH"
+
+          echo "✓ mirrored $GH_REPO/$BRANCH -> crapsolutions/$gl/$BRANCH"
